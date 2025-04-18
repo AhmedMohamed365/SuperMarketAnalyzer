@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Container, Box, Paper, Typography, Button, Grid, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
+import React, { useState, useEffect, useRef } from 'react';
+import { Container, Box, Paper, Typography, Button, Grid, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Checkbox, FormControlLabel } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import io from 'socket.io-client';
 
@@ -15,6 +15,23 @@ const VideoDisplay = styled('img')({
   marginTop: '20px',
 });
 
+const CanvasContainer = styled(Box)({
+  position: 'relative',
+  marginTop: '20px',
+  width: '100%',
+  height: '500px',
+  backgroundColor: 'black',
+});
+
+const Canvas = styled('canvas')({
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  zIndex: 10,
+  width: '100%',
+  height: '100%',
+});
+
 const DashboardContainer = styled(Paper)(({ theme }) => ({
   padding: theme.spacing(2),
   marginTop: theme.spacing(2),
@@ -28,6 +45,10 @@ function App() {
   const [processing, setProcessing] = useState(false);
   const [socket, setSocket] = useState(null);
   const [trackStats, setTrackStats] = useState({});
+  const [drawingROI, setDrawingROI] = useState(false);
+  const [roiPoints, setRoiPoints] = useState([]);
+  const [useROI, setUseROI] = useState(false);
+  const canvasRef = useRef(null);
 
   useEffect(() => {
     const newSocket = io('http://localhost:5000');
@@ -47,6 +68,67 @@ function App() {
 
   const handleFileChange = (event) => {
     setVideoFile(event.target.files[0]);
+    setRoiPoints([]);
+    setUseROI(false);
+  };
+
+  const handleDrawROI = () => {
+    setDrawingROI(true);
+    setRoiPoints([]);
+    drawROI();
+  };
+
+  const handleCanvasClick = (e) => {
+    if (!drawingROI || !canvasRef.current) return;
+    
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    setRoiPoints(prevPoints => [...prevPoints, { x, y }]);
+    drawROI();
+  };
+
+  const drawROI = () => {
+    if (!canvasRef.current) return;
+    
+    const ctx = canvasRef.current.getContext('2d');
+    ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    
+    // Draw the polygon
+    if (roiPoints.length > 0) {
+      ctx.beginPath();
+      ctx.moveTo(roiPoints[0].x, roiPoints[0].y);
+      
+      for (let i = 1; i < roiPoints.length; i++) {
+        ctx.lineTo(roiPoints[i].x, roiPoints[i].y);
+      }
+      
+      if (roiPoints.length > 2) {
+        ctx.closePath();
+      }
+      
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      
+      // Draw the points
+      roiPoints.forEach(point => {
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI);
+        ctx.fillStyle = 'red';
+        ctx.fill();
+      });
+    }
+  };
+
+  const handleFinishROI = () => {
+    setDrawingROI(false);
+  };
+
+  const handleClearROI = () => {
+    setRoiPoints([]);
+    drawROI();
   };
 
   const handleUpload = async () => {
@@ -54,6 +136,11 @@ function App() {
 
     const formData = new FormData();
     formData.append('video', videoFile);
+    
+    // Add ROI points if they exist and ROI is enabled
+    if (useROI && roiPoints.length > 0) {
+      formData.append('roi_points', JSON.stringify(roiPoints));
+    }
 
     try {
       setProcessing(true);
@@ -73,6 +160,10 @@ function App() {
       setProcessing(false);
     }
   };
+
+  useEffect(() => {
+    drawROI();
+  }, [roiPoints]);
 
   return (
     <Container maxWidth="lg">
@@ -106,6 +197,61 @@ function App() {
                   <Typography variant="body1">
                     Selected file: {videoFile.name}
                   </Typography>
+                  
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={useROI}
+                        onChange={(e) => setUseROI(e.target.checked)}
+                      />
+                    }
+                    label="Use Region of Interest (ROI)"
+                  />
+                  
+                  {useROI && (
+                    <>
+                      <Typography variant="body1" sx={{ mt: 2 }}>
+                        Draw Region of Interest
+                      </Typography>
+                      
+                      <Box sx={{ mt: 1, display: 'flex', justifyContent: 'center', gap: 1 }}>
+                        <Button
+                          variant="outlined"
+                          onClick={handleDrawROI}
+                          disabled={drawingROI}
+                        >
+                          Start Drawing
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          onClick={handleFinishROI}
+                          disabled={!drawingROI || roiPoints.length < 3}
+                        >
+                          Finish Drawing
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          onClick={handleClearROI}
+                          disabled={roiPoints.length === 0}
+                        >
+                          Clear
+                        </Button>
+                      </Box>
+                      
+                      <CanvasContainer>
+                        <Canvas
+                          ref={canvasRef}
+                          width={800}
+                          height={500}
+                          onClick={handleCanvasClick}
+                          style={{ 
+                            cursor: drawingROI ? 'crosshair' : 'default' 
+                          }}
+                        />
+                      </CanvasContainer>
+                    </>
+                  )}
+                  
                   <Button
                     variant="contained"
                     color="primary"

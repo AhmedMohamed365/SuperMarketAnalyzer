@@ -110,3 +110,5 @@ Thumbs.db
 *.tgz
 .cache/
 .parcel-cache/
+backend/yolov8n.onnx
+backend/roi_masks/*

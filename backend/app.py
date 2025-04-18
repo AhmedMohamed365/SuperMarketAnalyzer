@@ -7,6 +7,7 @@ from ultralytics import YOLO
 import socketio
 import eventlet
 import base64
+import json
 from datetime import datetime
 import pymongo
 import psycopg2
@@ -22,10 +23,12 @@ CORS(app)
 sio = socketio.Server(async_mode='eventlet', cors_allowed_origins='*')
 app.wsgi_app = socketio.WSGIApp(sio, app.wsgi_app)
 
-# Create uploads directory if it doesn't exist
+# Create directories if they don't exist
 UPLOAD_FOLDER = 'uploads'
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+ROI_FOLDER = 'roi_masks'
+for folder in [UPLOAD_FOLDER, ROI_FOLDER]:
+    if not os.path.exists(folder):
+        os.makedirs(folder)
 
 # Initialize MongoDB connection
 mongo_client = pymongo.MongoClient(os.getenv('MONGO_URI'))
@@ -104,9 +107,8 @@ else:
 device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 print(f"Using device: {device}")
 
-# Track statistics
-track_stats = {}
-THRESHOLD_SECONDS = 5  # Minimum time threshold for saving objects
+# Default threshold for tracking
+DEFAULT_THRESHOLD_SECONDS = 5
 
 @app.route('/upload', methods=['POST'])
 def upload_video():
@@ -126,19 +128,102 @@ def upload_video():
     filepath = os.path.join(UPLOAD_FOLDER, filename)
     file.save(filepath)
     
+    # Process ROI if provided
+    roi_mask = None
+    if 'roi_points' in request.form:
+        try:
+            roi_points = json.loads(request.form['roi_points'])
+            if roi_points and len(roi_points) >= 3:
+                # Get video dimensions
+                cap = cv2.VideoCapture(filepath)
+                video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                cap.release()
+                
+                # Calculate scaling factors
+                canvas_width = 800  # Canvas width from frontend
+                canvas_height = 500  # Canvas height from frontend
+                scale_x = video_width / canvas_width
+                scale_y = video_height / canvas_height
+                
+                # Scale ROI points to match video dimensions
+                scaled_points = []
+                for point in roi_points:
+                    scaled_x = int(point['x'] * scale_x)
+                    scaled_y = int(point['y'] * scale_y)
+                    scaled_points.append((scaled_x, scaled_y))
+                
+                # Create ROI mask
+                roi_mask = create_roi_mask(filepath, scaled_points)
+                # Save ROI mask
+                roi_mask_path = os.path.join(ROI_FOLDER, f"{video_id}_mask.png")
+                cv2.imwrite(roi_mask_path, roi_mask)
+        except Exception as e:
+            print(f"Error processing ROI: {e}")
+    
+    # Get custom threshold if provided
+    threshold_seconds = DEFAULT_THRESHOLD_SECONDS
+    if 'threshold' in request.form:
+        try:
+            threshold_seconds = float(request.form['threshold'])
+        except ValueError:
+            print(f"Invalid threshold value: {request.form['threshold']}, using default")
+    
     # Reset track statistics
     global track_stats
     track_stats = {}
     
     # Start processing the video
-    process_video(filepath, video_id)
+    process_video(filepath, video_id, roi_mask, threshold_seconds)
     
-    return jsonify({'message': 'Video uploaded successfully', 'filename': filename, 'video_id': video_id})
+    return jsonify({
+        'message': 'Video uploaded successfully', 
+        'filename': filename, 
+        'video_id': video_id,
+        'threshold': threshold_seconds
+    })
 
-def process_video(video_path, video_id):
+def create_roi_mask(video_path, roi_points):
+    # Extract first frame from video
+    cap = cv2.VideoCapture(video_path)
+    ret, frame = cap.read()
+    cap.release()
+    
+    if not ret:
+        raise Exception("Could not read video file")
+    
+    # Create empty mask
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    
+    # Convert ROI points to numpy array
+    roi_np = np.array(roi_points, dtype=np.int32)
+    
+    # Draw filled polygon on mask
+    cv2.fillPoly(mask, [roi_np], 255)
+    
+    return mask
+
+def is_point_in_roi(point, roi_mask):
+    if roi_mask is None:
+        return True
+    
+    x, y = int(point[0]), int(point[1])
+    # Check if the point is within mask boundaries
+    h, w = roi_mask.shape[:2]
+    if 0 <= x < w and 0 <= y < h:
+        return roi_mask[y, x] > 0
+    return False
+
+def process_video(video_path, video_id, roi_mask=None, threshold_seconds=DEFAULT_THRESHOLD_SECONDS):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = 0
+    
+    # Dictionary to track which IDs have exceeded threshold
+    exceeded_threshold = {}
+    
+    # Dictionary to store track stats for each ID
+    track_stats = {}
     
     while cap.isOpened():
         ret, frame = cap.read()
@@ -150,23 +235,62 @@ def process_video(video_path, video_id):
         
         # Update track statistics
         current_time = frame_count / fps
+        
+        # Make a copy of the frame for drawing
+        annotated_frame = frame.copy()
+        
         for result in results:
             boxes = result.boxes
             for box in boxes:
                 track_id = int(box.id.item()) if box.id is not None else None
+                
                 if track_id is not None:
+                    # Get box coordinates
+                    xyxy = box.xyxy[0].cpu().numpy()
+                    x1, y1, x2, y2 = map(int, xyxy)
+                    
+                    # Calculate center point of the box
+                    center_x = (x1 + x2) // 2
+                    center_y = (y1 + y2) // 2
+                    
+                    # Skip if the detection is outside ROI
+                    if not is_point_in_roi((center_x, center_y), roi_mask):
+                        continue
+                    
+                    # Update track stats
                     if track_id not in track_stats:
                         track_stats[track_id] = {
                             'first_time': current_time,
                             'last_time': current_time,
-                            'bboxes': []
+                            'bboxes': [xyxy.tolist()]
                         }
                     else:
                         track_stats[track_id]['last_time'] = current_time
-                        track_stats[track_id]['bboxes'].append(box.xyxy[0].cpu().numpy())
+                        track_stats[track_id]['bboxes'].append(xyxy.tolist())
+                    
+                    # Calculate time elapsed for this track
+                    time_elapsed = track_stats[track_id]['last_time'] - track_stats[track_id]['first_time']
+                    
+                    # Check if this track has exceeded the threshold
+                    if time_elapsed >= threshold_seconds:
+                        exceeded_threshold[track_id] = True
+                    
+                    # Determine color: red if exceeded threshold, blue otherwise
+                    color = (255, 0, 0) if track_id in exceeded_threshold else (0, 0, 255)
+                    
+                    # Draw bounding box
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Draw track ID and time
+                    label = f"ID:{track_id} {time_elapsed:.1f}s"
+                    cv2.putText(annotated_frame, label, (x1, y1 - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
-        # Draw detections on frame
-        annotated_frame = results[0].plot()
+        # Draw ROI contour if exists
+        if roi_mask is not None:
+            # Find contours in the mask
+            contours, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(annotated_frame, contours, -1, (0, 255, 0), 2)
         
         # Convert frame to base64
         _, buffer = cv2.imencode('.jpg', annotated_frame)
@@ -175,8 +299,9 @@ def process_video(video_path, video_id):
         # Send frame and track statistics to frontend
         sio.emit('frame', {
             'frame': frame_base64,
-            'track_stats': {track_id: {
-                'time_elapsed': stats['last_time'] - stats['first_time']
+            'track_stats': {str(track_id): {
+                'time_elapsed': stats['last_time'] - stats['first_time'],
+                'exceeded_threshold': track_id in exceeded_threshold
             } for track_id, stats in track_stats.items()}
         })
         
@@ -188,7 +313,7 @@ def process_video(video_path, video_id):
     # Process and save tracked objects that meet the threshold
     for track_id, stats in track_stats.items():
         time_elapsed = stats['last_time'] - stats['first_time']
-        if time_elapsed >= THRESHOLD_SECONDS:
+        if time_elapsed >= threshold_seconds:
             # Get the last bbox for cropping
             last_bbox = stats['bboxes'][-1]
             x1, y1, x2, y2 = map(int, last_bbox)
