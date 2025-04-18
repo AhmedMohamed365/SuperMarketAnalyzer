@@ -45,6 +45,7 @@ function App() {
   const [processing, setProcessing] = useState(false);
   const [socket, setSocket] = useState(null);
   const [trackStats, setTrackStats] = useState({});
+  const [prevTrackStats, setPrevTrackStats] = useState({});
   const [drawingROI, setDrawingROI] = useState(false);
   const [roiPoints, setRoiPoints] = useState([]);
   const [useROI, setUseROI] = useState(false);
@@ -57,7 +58,21 @@ function App() {
 
     newSocket.on('frame', (data) => {
       setCurrentFrame(`data:image/jpeg;base64,${data.frame}`);
-      setTrackStats(data.track_stats || {});
+      
+      // Update track stats only if there are changes
+      const newStats = data.track_stats || {};
+      const updatedStats = { ...prevTrackStats };
+      
+      for (const [trackId, stats] of Object.entries(newStats)) {
+        if (!prevTrackStats[trackId] || 
+            stats.time_elapsed !== prevTrackStats[trackId].time_elapsed ||
+            stats.exceeded_threshold !== prevTrackStats[trackId].exceeded_threshold) {
+          updatedStats[trackId] = stats;
+        }
+      }
+      
+      setTrackStats(updatedStats);
+      setPrevTrackStats(updatedStats);
     });
 
     newSocket.on('processing_complete', () => {
@@ -302,6 +317,7 @@ function App() {
                     <TableRow>
                       <TableCell>Track ID</TableCell>
                       <TableCell align="right">Time Elapsed (s)</TableCell>
+                      <TableCell align="center">Status</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -314,6 +330,9 @@ function App() {
                           </TableCell>
                           <TableCell align="right">
                             {stats.time_elapsed.toFixed(2)}
+                          </TableCell>
+                          <TableCell align="center">
+                            {stats.exceeded_threshold ? '🔴' : '🔵'}
                           </TableCell>
                         </TableRow>
                       ))}

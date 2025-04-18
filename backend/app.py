@@ -14,6 +14,8 @@ import psycopg2
 from dotenv import load_dotenv
 import uuid
 import torch
+from mongo_db import MongoHandler
+from postgres_db import PostgresHandler
 
 # Load environment variables
 load_dotenv()
@@ -233,134 +235,114 @@ def process_video(video_path, video_id, roi_mask=None, threshold_seconds=DEFAULT
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = 0
     
+    # Initialize database handlers
+    mongo_handler = MongoHandler()
+    postgres_handler = PostgresHandler()
+    
     # Dictionary to track which IDs have exceeded threshold
     exceeded_threshold = {}
     
     # Dictionary to store track stats for each ID
     track_stats = {}
     
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-            
-        # Run YOLO detection with tracking
-        results = model.track(frame, persist=True, device=device,
-                              classes=0, #person only
-                              agnostic_nms =True,
-                              tracker ='custom-botsort.yaml' )
-        
-        # Update track statistics
-        current_time = frame_count / fps
-        
-        # Make a copy of the frame for drawing
-        annotated_frame = frame.copy()
-        
-        for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                track_id = int(box.id.item()) if box.id is not None else None
-                
-                if track_id is not None:
-                    # Get box coordinates
-                    xyxy = box.xyxy[0].cpu().numpy()
-                    x1, y1, x2, y2 = map(int, xyxy)
-                    
-                    # Check if the box is within ROI
-                    if not is_box_in_roi(x1, y1, x2, y2, roi_mask):
-                        continue
-                    
-                    # Update track stats
-                    if track_id not in track_stats:
-                        track_stats[track_id] = {
-                            'first_time': current_time,
-                            'last_time': current_time,
-                            'bboxes': [xyxy.tolist()]
-                        }
-                    else:
-                        track_stats[track_id]['last_time'] = current_time
-                        track_stats[track_id]['bboxes'].append(xyxy.tolist())
-                    
-                    # Calculate time elapsed for this track
-                    time_elapsed = track_stats[track_id]['last_time'] - track_stats[track_id]['first_time']
-                    
-                    # Check if this track has exceeded the threshold
-                    if time_elapsed >= threshold_seconds:
-                        exceeded_threshold[track_id] = True
-                    
-                    # Determine color: red if exceeded threshold, blue otherwise
-                    color = (0, 0, 255) if track_id in exceeded_threshold else (255, 0, 0)
-                    
-                    # Draw bounding box
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                    
-                    # Draw track ID and time
-                    label = f"ID:{track_id} {time_elapsed:.1f}s"
-                    cv2.putText(annotated_frame, label, (x1, y1 - 10), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        
-        # Draw ROI contour if exists
-        if roi_mask is not None:
-            # Find contours in the mask
-            contours, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(annotated_frame, contours, -1, (0, 255, 0), 2)
-        
-        # Convert frame to base64
-        _, buffer = cv2.imencode('.jpg', annotated_frame)
-        frame_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        # Send frame and track statistics to frontend
-        sio.emit('frame', {
-            'frame': frame_base64,
-            'track_stats': {str(track_id): {
-                'time_elapsed': stats['last_time'] - stats['first_time'],
-                'exceeded_threshold': track_id in exceeded_threshold
-            } for track_id, stats in track_stats.items()}
-        })
-        
-        frame_count += 1
-        eventlet.sleep(0.03)
-    
-    cap.release()
-    
-    # Process and save tracked objects that meet the threshold
-    for track_id, stats in track_stats.items():
-        time_elapsed = stats['last_time'] - stats['first_time']
-        if time_elapsed >= threshold_seconds:
-            # Get the last bbox for cropping
-            last_bbox = stats['bboxes'][-1]
-            x1, y1, x2, y2 = map(int, last_bbox)
-            
-            # Read the last frame
-            cap = cv2.VideoCapture(video_path)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 1)
+    try:
+        while cap.isOpened():
             ret, frame = cap.read()
-            cap.release()
+            if not ret:
+                break
+                
+            # Run YOLO detection with tracking
+            results = model.track(frame,
+                                   persist=True, 
+                                   tracker="custom-botsort.yaml",
+                                   device=device,
+                                  classes=0,
+                                  agnostic_nms=True)
             
-            if ret:
-                # Crop the object
-                cropped = frame[y1:y2, x1:x2]
-                
-                # Convert to base64 for MongoDB
-                _, buffer = cv2.imencode('.jpg', cropped)
-                cropped_base64 = base64.b64encode(buffer).decode('utf-8')
-                
-                # Save to MongoDB
-                mongo_result = tracked_objects.insert_one({
-                    'video_id': video_id,
-                    'track_id': track_id,
-                    'time_elapsed': time_elapsed,
-                    'image': cropped_base64
-                })
-                
-                # Save to PostgreSQL
-                pg_cursor.execute(
-                    'INSERT INTO object_tracking (video_id, track_id, time_elapsed, mongo_object_id) VALUES (%s, %s, %s, %s)',
-                    (video_id, track_id, time_elapsed, str(mongo_result.inserted_id))
-                )
-                pg_conn.commit()
+            # Update track statistics
+            current_time = frame_count / fps
+            
+            # Make a copy of the frame for drawing
+            annotated_frame = frame.copy()
+            
+            for result in results:
+                boxes = result.boxes
+                for box in boxes:
+                    track_id = int(box.id.item()) if box.id is not None else None
+                    
+                    if track_id is not None:
+                        # Get box coordinates
+                        xyxy = box.xyxy[0].cpu().numpy()
+                        x1, y1, x2, y2 = map(int, xyxy)
+                        
+                        # Check if the box is within ROI
+                        if not is_box_in_roi(x1, y1, x2, y2, roi_mask):
+                            continue
+                        
+                        # Update track stats
+                        if track_id not in track_stats:
+                            track_stats[track_id] = {
+                                'first_time': current_time,
+                                'last_time': current_time,
+                                'bboxes': [xyxy.tolist()]
+                            }
+                        else:
+                            track_stats[track_id]['last_time'] = current_time
+                            track_stats[track_id]['bboxes'].append(xyxy.tolist())
+                        
+                        # Calculate time elapsed for this track
+                        time_elapsed = track_stats[track_id]['last_time'] - track_stats[track_id]['first_time']
+                        
+                        # Check if this track has exceeded the threshold
+                        if time_elapsed >= threshold_seconds and track_id not in exceeded_threshold:
+                            exceeded_threshold[track_id] = True
+                            # Save to databases
+                            mongo_id = mongo_handler.save_tracked_object(
+                                frame, xyxy
+                            )
+                            postgres_handler.save_tracking_data(
+                                video_id, track_id, time_elapsed, mongo_id
+                            )
+                        
+                        # Determine color: red if exceeded threshold, blue otherwise
+                        color = (255, 0, 0) if track_id in exceeded_threshold else (0, 0, 255)
+                        
+                        # Draw bounding box
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                        
+                        # Draw track ID and time
+                        label = f"ID:{track_id} {time_elapsed:.1f}s"
+                        cv2.putText(annotated_frame, label, (x1, y1 - 10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # Draw ROI contour if exists
+            if roi_mask is not None:
+                # Find contours in the mask
+                contours, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(annotated_frame, contours, -1, (0, 255, 0), 2)
+            
+            # Convert frame to base64
+            _, buffer = cv2.imencode('.jpg', annotated_frame)
+            frame_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            # Send frame and track statistics to frontend
+            sio.emit('frame', {
+                'frame': frame_base64,
+                'track_stats': {str(track_id): {
+                    'time_elapsed': stats['last_time'] - stats['first_time'],
+                    'exceeded_threshold': track_id in exceeded_threshold
+                } for track_id, stats in track_stats.items()}
+            })
+            
+            frame_count += 1
+            eventlet.sleep(0.03)
     
-    sio.emit('processing_complete', {'message': 'Video processing completed'})
+    finally:
+        # Clean up
+        cap.release()
+        mongo_handler.close()
+        postgres_handler.close()
+        sio.emit('processing_complete', {'message': 'Video processing completed'})
 
 if __name__ == '__main__':
     eventlet.wsgi.server(eventlet.listen(('', 5000)), app) 
