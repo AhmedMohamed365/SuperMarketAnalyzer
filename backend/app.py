@@ -205,16 +205,16 @@ def create_roi_mask(video_path, roi_points):
     
     return mask
 
-def is_point_in_roi(point, roi_mask):
-    if roi_mask is None:
-        return True
+# def is_point_in_roi(point, roi_mask):
+#     if roi_mask is None:
+#         return True
     
-    x, y = int(point[0]), int(point[1])
-    # Check if the point is within mask boundaries
-    h, w = roi_mask.shape[:2]
-    if 0 <= x < w and 0 <= y < h:
-        return roi_mask[y, x] > 0
-    return False
+#     x, y = int(point[0]), int(point[1])
+#     # Check if the point is within mask boundaries
+#     h, w = roi_mask.shape[:2]
+#     if 0 <= x < w and 0 <= y < h:
+#         return roi_mask[y, x] > 0
+#     return False
 
 def is_box_in_roi(x1, y1, x2, y2, roi_mask):
     if roi_mask is None:
@@ -255,6 +255,7 @@ def process_video(video_path, video_id, roi_mask=None, threshold_seconds=DEFAULT
             results = model.track(frame,
                                    persist=True, 
                                    tracker="custom-botsort.yaml",
+                                #    tracker="botsort.yaml",
                                    device=device,
                                   classes=0,
                                   agnostic_nms=True)
@@ -305,7 +306,7 @@ def process_video(video_path, video_id, roi_mask=None, threshold_seconds=DEFAULT
                             )
                         
                         # Determine color: red if exceeded threshold, blue otherwise
-                        color = (255, 0, 0) if track_id in exceeded_threshold else (0, 0, 255)
+                        color = (0, 0, 255) if track_id in exceeded_threshold else (255, 0, 0)
                         
                         # Draw bounding box
                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)

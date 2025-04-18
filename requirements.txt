@@ -9,3 +9,4 @@ eventlet==0.33.3
 pymongo==4.5.0
 psycopg2-binary==2.9.9
 python-dotenv==1.0.0 
+tensorrt==10.9.0.34
