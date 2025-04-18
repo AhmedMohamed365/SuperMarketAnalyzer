@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Container, Box, Paper, Typography, Button, Grid, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Checkbox, FormControlLabel } from '@mui/material';
+import { Container, Box, Paper, Typography, Button, Grid, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Checkbox, FormControlLabel, Slider } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import io from 'socket.io-client';
 
@@ -48,6 +48,7 @@ function App() {
   const [drawingROI, setDrawingROI] = useState(false);
   const [roiPoints, setRoiPoints] = useState([]);
   const [useROI, setUseROI] = useState(false);
+  const [threshold, setThreshold] = useState(5);
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -136,6 +137,7 @@ function App() {
 
     const formData = new FormData();
     formData.append('video', videoFile);
+    formData.append('threshold', threshold.toString());
     
     // Add ROI points if they exist and ROI is enabled
     if (useROI && roiPoints.length > 0) {
@@ -252,6 +254,20 @@ function App() {
                     </>
                   )}
                   
+                  <Box sx={{ mt: 2 }}>
+                    <Typography gutterBottom>
+                      Time Threshold (seconds): {threshold}
+                    </Typography>
+                    <Slider
+                      value={threshold}
+                      onChange={(e, newValue) => setThreshold(newValue)}
+                      min={1}
+                      max={30}
+                      step={1}
+                      valueLabelDisplay="auto"
+                    />
+                  </Box>
+                  
                   <Button
                     variant="contained"
                     color="primary"
@@ -289,16 +305,18 @@ function App() {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {Object.entries(trackStats).map(([trackId, stats]) => (
-                      <TableRow key={trackId}>
-                        <TableCell component="th" scope="row">
-                          {trackId}
-                        </TableCell>
-                        <TableCell align="right">
-                          {stats.time_elapsed.toFixed(2)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {Object.entries(trackStats)
+                      .sort(([, a], [, b]) => b.time_elapsed - a.time_elapsed)
+                      .map(([trackId, stats]) => (
+                        <TableRow key={trackId}>
+                          <TableCell component="th" scope="row">
+                            {trackId}
+                          </TableCell>
+                          <TableCell align="right">
+                            {stats.time_elapsed.toFixed(2)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
                   </TableBody>
                 </Table>
               </TableContainer>
