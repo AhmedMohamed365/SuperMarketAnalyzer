@@ -28,6 +28,7 @@ app.wsgi_app = socketio.WSGIApp(sio, app.wsgi_app)
 # Create directories if they don't exist
 UPLOAD_FOLDER = 'uploads'
 ROI_FOLDER = 'roi_masks'
+MODEL_NAME = 'yolo11s.pt'
 for folder in [UPLOAD_FOLDER, ROI_FOLDER]:
     if not os.path.exists(folder):
         os.makedirs(folder)
@@ -90,20 +91,27 @@ except Exception as e:
 # Initialize YOLO model
 print("Initializing YOLO model...")
 print(f"CUDA available: {torch.cuda.is_available()}")
-model = YOLO('yolo11s.pt')
 
-# Export to TensorRT if CUDA is available
-if torch.cuda.is_available():
-    try:
-        print("Attempting TensorRT export...")
-        model.export(format='engine', device=0)
-        model = YOLO('yolo11s.engine')
-        print("TensorRT model loaded successfully")
-    except Exception as e:
-        print(f"TensorRT export failed: {e}")
-        print("Falling back to regular model")
+if os.path.exists(MODEL_NAME.replace('.pt', '.engine')):
+    model = YOLO(MODEL_NAME.replace('.pt', '.engine'))
+    print("TensorRT model loaded successfully")
 else:
-    print("CUDA not available, using CPU model")
+    model = YOLO(MODEL_NAME)
+    if torch.cuda.is_available():
+        # Export to TensorRT if CUDA is available
+        try:
+            print("Attempting TensorRT export...")
+            model.export(format='engine', device=0)
+            model = YOLO('yolo11s.engine')
+            print("TensorRT model loaded successfully")
+        except Exception as e:
+            print(f"TensorRT export failed: {e}")
+            print("Falling back to regular model")
+    else:
+        print("CUDA not available, using CPU model")
+
+
+
 
 # Set device for inference
 device = 'cuda:0' if torch.cuda.is_available() else 'cpu'

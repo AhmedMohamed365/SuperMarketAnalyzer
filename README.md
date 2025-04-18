@@ -5,9 +5,10 @@ This application provides a web interface for uploading videos and performing re
 ## Features
 
 - Video upload through a web interface
+- Define region of interset and threshold for people waiting in same place.
 - Real-time object detection using YOLOv8
 - Object tracking across frames
-- Live visualization of detection results
+- Live visualization of detection results throug websockets
 - Modern and responsive UI
 
 ## Prerequisites
@@ -15,6 +16,7 @@ This application provides a web interface for uploading videos and performing re
 - Python 3.8 or higher
 - Node.js 14 or higher
 - npm or yarn
+- TensorRT for inference (optional)
 
 ## Setup
 
