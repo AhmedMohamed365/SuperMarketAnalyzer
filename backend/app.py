@@ -88,14 +88,14 @@ except Exception as e:
 # Initialize YOLO model
 print("Initializing YOLO model...")
 print(f"CUDA available: {torch.cuda.is_available()}")
-model = YOLO('yolov8n.pt')
+model = YOLO('yolo11s.pt')
 
 # Export to TensorRT if CUDA is available
 if torch.cuda.is_available():
     try:
         print("Attempting TensorRT export...")
         model.export(format='engine', device=0)
-        model = YOLO('yolov8n.engine')
+        model = YOLO('yolo11s.engine')
         print("TensorRT model loaded successfully")
     except Exception as e:
         print(f"TensorRT export failed: {e}")
@@ -214,6 +214,20 @@ def is_point_in_roi(point, roi_mask):
         return roi_mask[y, x] > 0
     return False
 
+def is_box_in_roi(x1, y1, x2, y2, roi_mask):
+    if roi_mask is None:
+        return True
+    margin = 10
+    # Calculate foot point (bottom center of the box)
+    foot_point = (int((x1 + x2) / 2), y2 - margin)
+    
+    # Check if the foot point is within the ROI mask
+    is_in_roi = (0 <= foot_point[0] < roi_mask.shape[1] and
+                 0 <= foot_point[1] < roi_mask.shape[0] and
+                 roi_mask[foot_point[1], foot_point[0]] == 255)
+    
+    return is_in_roi
+
 def process_video(video_path, video_id, roi_mask=None, threshold_seconds=DEFAULT_THRESHOLD_SECONDS):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -231,7 +245,10 @@ def process_video(video_path, video_id, roi_mask=None, threshold_seconds=DEFAULT
             break
             
         # Run YOLO detection with tracking
-        results = model.track(frame, persist=True, tracker="bytetrack.yaml", device=device)
+        results = model.track(frame, persist=True, device=device,
+                              classes=0, #person only
+                              agnostic_nms =True,
+                              tracker ='custom-botsort.yaml' )
         
         # Update track statistics
         current_time = frame_count / fps
@@ -249,12 +266,8 @@ def process_video(video_path, video_id, roi_mask=None, threshold_seconds=DEFAULT
                     xyxy = box.xyxy[0].cpu().numpy()
                     x1, y1, x2, y2 = map(int, xyxy)
                     
-                    # Calculate center point of the box
-                    center_x = (x1 + x2) // 2
-                    center_y = (y1 + y2) // 2
-                    
-                    # Skip if the detection is outside ROI
-                    if not is_point_in_roi((center_x, center_y), roi_mask):
+                    # Check if the box is within ROI
+                    if not is_box_in_roi(x1, y1, x2, y2, roi_mask):
                         continue
                     
                     # Update track stats
@@ -276,7 +289,7 @@ def process_video(video_path, video_id, roi_mask=None, threshold_seconds=DEFAULT
                         exceeded_threshold[track_id] = True
                     
                     # Determine color: red if exceeded threshold, blue otherwise
-                    color = (255, 0, 0) if track_id in exceeded_threshold else (0, 0, 255)
+                    color = (0, 0, 255) if track_id in exceeded_threshold else (255, 0, 0)
                     
                     # Draw bounding box
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
